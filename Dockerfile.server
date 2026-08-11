@@ -1,0 +1,67 @@
+# sig-server image (src/server.ts) -- see AGENTS.md and README's "Remote
+# mode" section.
+#
+#   docker build -f Dockerfile.server -t sig-server .
+#
+# sig-server is a plain bearer-token-gated JSON HTTP API frontend for sig,
+# meant to run CO-LOCATED with `sig daemon` (same host, same signal-cli
+# socket and SQLite store -- same as the existing MCP server image). It lets
+# the `sig` CLI be driven from a *different* machine over the network
+# (SIG_SERVER_URL + SIG_SERVER_TOKEN) instead of needing local access to the
+# daemon's Unix socket and SQLite file. It does NOT change the local
+# daemon/store architecture described in AGENTS.md -- it's a network-reachable
+# frontend on top of it.
+#
+# Required env vars:
+#   SIGNAL_ACCOUNT        Linked phone number (or SIGNAL_ACCOUNT_FILE, a
+#                          Docker-secret path whose trimmed contents are used)
+#   SIG_SERVER_TOKEN       Bearer token every request must present (or
+#                          SIG_SERVER_TOKEN_FILE). Refuses to start without one
+#                          -- this server has no other auth layer.
+# Optional:
+#   SIG_SERVER_PORT        default 8420
+#   SIG_SERVER_HOST        default 127.0.0.1 -- set 0.0.0.0 to accept
+#                          connections from outside the container (still
+#                          bearer-token gated; put a TLS-terminating reverse
+#                          proxy such as Caddy in front for real remote use)
+#   SIG_READ_ONLY           set exactly "true" to 403 the write endpoints
+#                          (POST /v1/react, POST /v1/send)
+#   SIGNAL_DB / SIGNAL_SOCKET       same defaults as the CLI/daemon; point
+#                          them at the daemon's store/socket
+#   SIGNAL_SEMANTICD_URL   base URL of a deployed sig-semanticd sidecar
+#
+# Run (bind-mount the store and socket from the host where `sig daemon` runs,
+# same volumes as the existing MCP server image):
+#
+#   docker run -d --rm \
+#     -e SIGNAL_ACCOUNT=+491700000000 \
+#     -e SIG_SERVER_TOKEN=<token> \
+#     -e SIGNAL_DB=/data/messages.db \
+#     -e SIGNAL_SOCKET=/run/sig/signal-cli.sock \
+#     -v /host/state/sig:/data \
+#     -v /host/run/sig:/run/sig \
+#     -p 8420:8420 \
+#     sig-server
+
+FROM node:22-slim AS build
+RUN corepack enable
+# Without this, pnpm treats node_modules as stale after the later `COPY . .`
+# resets file mtimes (even though content is unchanged) and blocks on an
+# interactive re-install confirmation that has no TTY to answer it.
+ENV CI=true
+WORKDIR /app
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
+RUN pnpm install --frozen-lockfile --prod=false
+COPY . .
+RUN pnpm run build
+RUN pnpm install --frozen-lockfile --prod
+
+FROM node:22-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/package.json ./package.json
+EXPOSE 8420
+USER node
+ENTRYPOINT ["node", "dist/server.js"]

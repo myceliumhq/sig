@@ -1,0 +1,10 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    uses: myceliumhq/.github/.github/workflows/node-ci.yml@main

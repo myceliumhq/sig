@@ -1,0 +1,303 @@
+// Envelope parsing + classification. signal-cli (with `-o json`) pushes every
+// received item to the daemon's stdout as a JSON-RPC notification:
+//
+//   {"jsonrpc":"2.0","method":"receive","params":{"envelope":{...}}}
+//
+// The envelope shape varies by item type (verified live against a real
+// account):
+//   * message FROM someone else -> envelope.dataMessage.message (+ attachments/
+//     quote), optionally envelope.dataMessage.groupInfo for a group message.
+//   * message sent BY you (incl. "Note to Self") -> envelope.syncMessage.
+//     sentMessage.message, with a destination (1:1) or groupInfo (group).
+//   * low-signal noise -> bare syncMessage:{}, syncMessage:{type:"CONTACTS_SYNC"},
+//     delivery/read receipts (receiptMessage), typing indicators. These are
+//     persisted for completeness/debugging but classified so message views and
+//     semantic indexing can exclude them.
+//
+// Every row gets an explicit `kind` so the classification is decided exactly
+// once, here, rather than re-derived ad hoc at each read site.
+
+export type MessageKind = "message" | "receipt" | "sync-noise";
+export type Direction = "incoming" | "outgoing";
+
+export interface Attachment {
+  id?: string;
+  fileName?: string | null;
+  contentType?: string | null;
+  size?: number;
+}
+
+export interface DataMessage {
+  timestamp?: number;
+  message?: string | null;
+  quote?: { id?: number; author?: string; text?: string | null };
+  attachments?: Attachment[];
+  groupInfo?: { groupId?: string; type?: string };
+  reaction?: {
+    emoji?: string;
+    targetAuthor?: string;
+    targetSentTimestamp?: number;
+    isRemove?: boolean;
+  };
+}
+
+export interface SentMessage {
+  destination?: string | null;
+  destinationNumber?: string | null;
+  destinationUuid?: string | null;
+  timestamp?: number;
+  message?: string | null;
+  quote?: { id?: number; author?: string; text?: string | null };
+  attachments?: Attachment[];
+  groupInfo?: { groupId?: string; type?: string };
+}
+
+export interface SyncMessage {
+  sentMessage?: SentMessage;
+  type?: string;
+}
+
+export interface Envelope {
+  source?: string;
+  sourceNumber?: string | null;
+  sourceUuid?: string | null;
+  sourceName?: string | null;
+  sourceDevice?: number;
+  timestamp?: number;
+  dataMessage?: DataMessage;
+  syncMessage?: SyncMessage;
+  receiptMessage?: unknown;
+  typingMessage?: unknown;
+}
+
+export interface ReceiveNotification {
+  jsonrpc?: string;
+  method?: string;
+  params?: { envelope?: Envelope };
+}
+
+// A row ready to persist. `source` is the *conversation key* -- the stable id a
+// 1:1 or group thread is grouped by, identical for the incoming and outgoing
+// halves of the same conversation (a contact's number for 1:1, "group:<id>"
+// for a group), so `list conversations`/`list messages` group correctly.
+export interface StoredRow {
+  source: string;
+  ts: number;
+  kind: MessageKind;
+  direction: Direction | null;
+  sender: string | null;
+  senderName: string | null;
+  groupId: string | null;
+  body: string;
+  attachments: number;
+  // Full per-attachment metadata (signal-cli's `id`, needed to locate the
+  // downloaded file, plus filename/content-type/size for display). Only
+  // `attachments` (the count) is persisted on the message row itself -- the
+  // daemon uses this list separately to copy each file and insert its own
+  // row (see ingest/daemon.ts and store.ts's `attachments` table). Entries
+  // with no `id` are dropped (nothing to locate on disk).
+  rawAttachments: Attachment[];
+  payload: string;
+  receivedAt: number;
+}
+
+const CONVERSATION_GROUP_PREFIX = "group:";
+
+function firstNonEmpty(...values: (string | null | undefined)[]): string | null {
+  for (const v of values) {
+    if (typeof v === "string" && v !== "") return v;
+  }
+  return null;
+}
+
+function attachmentCount(atts: Attachment[] | undefined): number {
+  return Array.isArray(atts) ? atts.length : 0;
+}
+
+// Only attachments with an `id` are locatable on disk (signal-cli names the
+// downloaded file by id) -- everything else is dropped rather than stored
+// with no way to ever retrieve its bytes.
+function rawAttachmentsOf(atts: Attachment[] | undefined): Attachment[] {
+  return Array.isArray(atts) ? atts.filter((a) => typeof a.id === "string" && a.id !== "") : [];
+}
+
+// Turn one parsed stdout line into a StoredRow, or null if the line isn't a
+// `receive` notification at all (e.g. a JSON-RPC response to some command that
+// happens to share the socket, or an unparseable line).
+export function toStoredRow(notification: ReceiveNotification): StoredRow | null {
+  if (notification.method !== "receive") return null;
+  const envelope = notification.params?.envelope;
+  if (!envelope || typeof envelope !== "object") return null;
+
+  const ts =
+    envelope.timestamp ??
+    envelope.dataMessage?.timestamp ??
+    envelope.syncMessage?.sentMessage?.timestamp ??
+    0;
+  const senderNumber = firstNonEmpty(envelope.sourceNumber, envelope.source, envelope.sourceUuid);
+  const senderName = firstNonEmpty(envelope.sourceName);
+  const receivedAt = Date.now();
+  const payload = JSON.stringify(notification);
+
+  const base = {
+    ts,
+    sender: senderNumber,
+    senderName,
+    payload,
+    receivedAt,
+  };
+
+  // Outgoing (sent by this account, synced from another linked device or a
+  // "Note to Self").
+  const sent = envelope.syncMessage?.sentMessage;
+  if (sent) {
+    const groupId = firstNonEmpty(sent.groupInfo?.groupId);
+    const destination = firstNonEmpty(
+      sent.destinationNumber,
+      sent.destination,
+      sent.destinationUuid,
+    );
+    const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (destination ?? "self");
+    return {
+      ...base,
+      source,
+      kind: "message",
+      direction: "outgoing",
+      groupId,
+      body: sent.message ?? "",
+      attachments: attachmentCount(sent.attachments),
+      rawAttachments: rawAttachmentsOf(sent.attachments),
+    };
+  }
+
+  // Incoming data message (text, attachment-only, or a reaction). A reaction
+  // with no message body is still a real message-kind row (it carries an
+  // emoji), just with an empty body -- so it's excluded from semantic indexing
+  // (body-empty filter) without needing a separate kind.
+  const data = envelope.dataMessage;
+  if (data) {
+    const groupId = firstNonEmpty(data.groupInfo?.groupId);
+    const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (senderNumber ?? "unknown");
+    return {
+      ...base,
+      source,
+      kind: "message",
+      direction: "incoming",
+      groupId,
+      body: data.message ?? "",
+      attachments: attachmentCount(data.attachments),
+      rawAttachments: rawAttachmentsOf(data.attachments),
+    };
+  }
+
+  // Delivery/read receipts and typing indicators: real envelopes, no content.
+  if (envelope.receiptMessage !== undefined || envelope.typingMessage !== undefined) {
+    return {
+      ...base,
+      source: senderNumber ?? "unknown",
+      kind: "receipt",
+      direction: null,
+      groupId: null,
+      body: "",
+      attachments: 0,
+      rawAttachments: [],
+    };
+  }
+
+  // Everything else -- bare syncMessage:{}, CONTACTS_SYNC, unknown types.
+  return {
+    ...base,
+    source: senderNumber ?? "unknown",
+    kind: "sync-noise",
+    direction: null,
+    groupId: null,
+    body: "",
+    attachments: 0,
+    rawAttachments: [],
+  };
+}
+
+// Build a StoredRow for a message this process just sent via `client.send()`.
+// Signal's protocol does NOT echo a device's own outbound sends back to that
+// same device (sync notifications only reach *other* linked devices), so
+// without this the local store would never see anything sent from here --
+// live-verified: `sig send` followed by `sig messages` showed zero rows until
+// this was added. Call immediately after a successful send/RPC, using the
+// timestamp the RPC call returns (the actual sent-message timestamp, which
+// doubles as the id Signal/other clients reference for quoting/reactions).
+export function outgoingRowFromLocalSend(params: {
+  recipient?: string;
+  groupId?: string;
+  message: string;
+  ts: number;
+  attachmentCount?: number;
+}): StoredRow {
+  const groupId = params.groupId ?? null;
+  const source = groupId
+    ? `${CONVERSATION_GROUP_PREFIX}${groupId}`
+    : (params.recipient ?? "unknown");
+  return {
+    source,
+    ts: params.ts,
+    kind: "message",
+    direction: "outgoing",
+    sender: null,
+    senderName: null,
+    groupId,
+    body: params.message,
+    attachments: params.attachmentCount ?? 0,
+    // No signal-cli attachment `id` exists for a message we just sent (ids
+    // are assigned to *received* attachments); the caller (send.ts /
+    // messaging.ts) records attachment rows separately, directly from the
+    // local file paths it was given -- see outgoingAttachmentRows() below.
+    rawAttachments: [],
+    payload: JSON.stringify({ locallySent: true, recipient: params.recipient ?? null, groupId }),
+    receivedAt: Date.now(),
+  };
+}
+
+// Attachment rows for a message this process just sent. Unlike received
+// attachments (copied from signal-cli's download into sig's own attachments
+// dir, see ingest/daemon.ts), a *sent* attachment's bytes already live
+// wherever the caller pointed --attachment at -- so `localPath` is that path
+// verbatim rather than a copy. If the file is later moved or deleted, the
+// stored path simply stops resolving; that risk is the caller's, same as any
+// other file-path-based CLI argument.
+export function outgoingAttachmentRows(params: {
+  source: string;
+  ts: number;
+  paths: string[];
+}): AttachmentRow[] {
+  return params.paths.map((path, index) => ({
+    id: `sent:${params.ts}:${index}`,
+    source: params.source,
+    ts: params.ts,
+    fileName: path.split("/").pop() ?? path,
+    contentType: null,
+    size: null,
+    localPath: path,
+  }));
+}
+
+export interface AttachmentRow {
+  id: string;
+  source: string;
+  ts: number;
+  fileName: string | null;
+  contentType: string | null;
+  size: number | null;
+  localPath: string;
+}
+
+// Parse a single raw stdout line into a notification, tolerating non-JSON /
+// non-receive lines (returns null rather than throwing, so one bad line can't
+// stall ingestion).
+export function parseLine(line: string): ReceiveNotification | null {
+  const trimmed = line.trim();
+  if (trimmed === "") return null;
+  try {
+    return JSON.parse(trimmed) as ReceiveNotification;
+  } catch {
+    return null;
+  }
+}

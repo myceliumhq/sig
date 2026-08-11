@@ -1,0 +1,19 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      # Required for npm trusted publishing (OIDC) -- npm validates the
+      # trusted-publisher config against *this* file (org/repo/workflow
+      # filename), not the shared reusable workflow it calls into. See
+      # myceliumhq/.github's node-release.yml for why both need this.
+      id-token: write
+    uses: myceliumhq/.github/.github/workflows/node-release.yml@main
+    secrets: inherit
