@@ -247,6 +247,19 @@ SIGNAL_ACCOUNT=+491700000000 pnpm run start:mcp
 
 A `Dockerfile` builds the MCP server image (`Dockerfile.semanticd` for the semantic sidecar).
 
+## Docker images
+
+Four images publish to `ghcr.io/myceliumhq/` on every release:
+
+| Image | Dockerfile | Entrypoint | Role |
+|---|---|---|---|
+| `sig-daemon` | `Dockerfile.daemon` | `sig daemon` | Owns signal-cli as a child process (bundles signal-cli + a matching JRE). The only stateful, always-on piece -- everything else reads what it writes. **Must be deployed on the `linux/amd64` platform** signal-cli's bundled native `libsignal-client` lib targets. |
+| `sig-server` | `Dockerfile.server` | `sig-server` | Bearer-token-gated remote API the CLI talks to (see "Remote mode" above). Co-located with `sig-daemon` (same socket + store). |
+| `sig-semanticd` | `Dockerfile.semanticd` | `sig-semanticd` | Semantic search sidecar; reads the same SQLite store. |
+| `sig-mcp` | `Dockerfile` | `sig-mcp-server` | Standalone MCP server, for hosts that want MCP instead of `sig-server`. |
+
+`sig-daemon`, `sig-server`, and `sig-semanticd` are meant to run together, sharing two volumes: signal-cli's own config/data dir (the linked-device keys -- **back this up like a secret**) and sig's state dir (`messages.db` + attachments). `sig-daemon` and `sig-server` additionally share a small volume for the Unix socket between them (its path must stay short -- AF_UNIX's ~104-byte limit, see `src/paths.ts`).
+
 ## Development
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup and commit conventions.

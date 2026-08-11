@@ -1,0 +1,105 @@
+# sig-daemon image (`sig daemon`, src/cli/commands/daemon.ts) -- the
+# ingestion supervisor that OWNS signal-cli as a child process. See
+# AGENTS.md's "Architecture note" for why this process must be the sole
+# receiver, and README's "Remote mode" section for how sig-server/
+# sig-semanticd attach to what this container writes.
+#
+# Unlike the other three images (Dockerfile, Dockerfile.server,
+# Dockerfile.semanticd), which are plain Node apps that reach an
+# already-running signal-cli over a socket, this image bundles signal-cli
+# itself (the official JVM-based Linux release, matching the version
+# verified during development -- x86_64 Linux native libsignal-client is
+# bundled by upstream, see https://github.com/AsamK/signal-cli's system
+# requirements) plus a matching JRE, since this container is the one that
+# spawns it.
+#
+#   docker build -f Dockerfile.daemon -t sig-daemon .
+#
+# Required env vars:
+#   SIGNAL_ACCOUNT        Linked phone number (or SIGNAL_ACCOUNT_FILE)
+# Optional:
+#   SIGNAL_CONFIG_DIR      signal-cli's own config/data dir (the linked-device
+#                          keys -- CRITICAL, must be a persistent volume, see
+#                          below). Defaults to signal-cli's own default
+#                          location inside the container if unset, which is
+#                          NOT what you want in a container -- always set this.
+#   SIGNAL_SOCKET          Unix socket path this container's signal-cli
+#                          exposes for sig-server to connect to -- MUST be a
+#                          SHORT path (AF_UNIX ~104 byte limit, live-verified
+#                          during development), put it under a small shared
+#                          volume like /run/sig, not under /data.
+#   SIGNAL_DB               SQLite message store path (persistent volume)
+#   SIGNAL_MCP... (n/a to this image; see Dockerfile for the MCP server)
+#
+# Volumes (all persistent -- signal-cli's config dir holds the account's
+# cryptographic keys, losing it unlinks the device):
+#   -v <config-volume>:/data/signal-cli   (-> SIGNAL_CONFIG_DIR)
+#   -v <state-volume>:/data/sig           (-> SIGNAL_DB under this dir)
+#   -v <run-volume>:/run/sig               (-> SIGNAL_SOCKET, shared with
+#                                           sig-server's own mount of the
+#                                           same volume)
+#
+#   docker run -d --restart unless-stopped \
+#     -e SIGNAL_ACCOUNT=+491700000000 \
+#     -e SIGNAL_CONFIG_DIR=/data/signal-cli \
+#     -e SIGNAL_DB=/data/sig/messages.db \
+#     -e SIGNAL_SOCKET=/run/sig/signal-cli.sock \
+#     -v sig-signal-cli-data:/data/signal-cli \
+#     -v sig-data:/data/sig \
+#     -v sig-run:/run/sig \
+#     sig-daemon
+
+FROM --platform=$BUILDPLATFORM node:22-slim AS build
+RUN corepack enable
+ENV CI=true
+WORKDIR /app
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
+RUN pnpm install --frozen-lockfile --prod=false
+COPY . .
+RUN pnpm run build
+RUN pnpm install --frozen-lockfile --prod
+
+# signal-cli's official JVM-based Linux release -- fetched at build time
+# (not vendored) so `docker build` always gets the exact upstream artifact,
+# checksum-verified against the matching .asc-signed release. Pinned to the
+# version verified live during development; bump deliberately, not
+# automatically, since signal-cli's on-disk account format has historically
+# had breaking changes across versions.
+FROM debian:bookworm-slim AS signalcli
+ARG SIGNAL_CLI_VERSION=0.14.7
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt
+RUN curl -fsSL -o signal-cli.tar.gz \
+      "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" \
+    && tar xzf signal-cli.tar.gz \
+    && mv "signal-cli-${SIGNAL_CLI_VERSION}" signal-cli \
+    && rm signal-cli.tar.gz
+
+# Runtime: needs both a JRE (signal-cli, JRE 25+ per upstream's system
+# requirements) and Node (the daemon supervisor itself) -- eclipse-temurin's
+# JRE image as the base (Debian/Ubuntu-based, has apt), Node installed on
+# top via NodeSource rather than trying to layer a JRE onto node:22-slim
+# (no matching JRE-25 Debian package as of this image's authoring).
+FROM eclipse-temurin:25-jre-noble AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=signalcli /opt/signal-cli /opt/signal-cli
+RUN ln -s /opt/signal-cli/bin/signal-cli /usr/local/bin/signal-cli
+
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build --chown=1000:1000 /app/dist ./dist
+COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
+COPY --from=build --chown=1000:1000 /app/package.json ./package.json
+
+# ubuntu:noble's "ubuntu" user is uid 1000, matching the other three images'
+# non-root convention (node:22-slim's "node" user is also uid 1000) -- keep
+# volume ownership/--chown consistent across all four images rather than
+# introducing a differently-numbered user here.
+RUN mkdir -p /data /run/sig && chown -R 1000:1000 /data /run/sig /app
+USER 1000
+
+ENTRYPOINT ["node", "dist/cli/index.js", "daemon"]

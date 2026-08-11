@@ -1,0 +1,41 @@
+name: Docker Publish (daemon)
+
+# Same workflow_run pattern as docker-mcp.yml/docker-semanticd.yml/
+# docker-server.yml -- see their own comments for why this can't just be
+# `on: push: tags:`.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  check-tag:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # Deliberately NOT github.event.workflow_run.head_sha -- see
+      # docker-mcp.yml's identical step for why: checking out `main` directly
+      # is what actually finds the version tag the release job pushed.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: tag
+        run: echo "tag=$(git tag --points-at HEAD | head -n1)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: check-tag
+    if: needs.check-tag.outputs.tag != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: myceliumhq/.github/.github/workflows/docker-publish.yml@main
+    with:
+      image: sig-daemon
+      dockerfile: Dockerfile.daemon
+      tag: ${{ needs.check-tag.outputs.tag }}
+      ref: ${{ needs.check-tag.outputs.tag }}
