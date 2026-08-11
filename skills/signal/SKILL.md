@@ -9,6 +9,10 @@ description: "Read, search, send, and react to the user's Signal messages with t
 `SIG_SERVER_URL` and `SIG_SERVER_TOKEN` env vars (a running `sig-server`'s base URL and its bearer
 token) -- run `sig doctor` first if a command fails with a config error.
 
+Run `sig` directly if it's on PATH (`command -v sig`). Only if it isn't, fall back to
+`npx @myceliumhq/sig` -- substitute that prefix for `sig` in every command below, otherwise
+identical.
+
 **Architecture you must understand:** `sig` doesn't talk to a live Signal API on each call, and it
 doesn't read a local database either. A long-running `sig daemon` process (on some always-on host)
 owns the `signal-cli` child process, receives every incoming message in real time, and writes it to

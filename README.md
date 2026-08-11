@@ -42,6 +42,13 @@ wherever you're working, pointed at `sig-server` over the network.
 
 ## Use
 
+Install globally so `sig`/`sig-server` are plain commands on PATH -- the resolve/download-check
+`npx` does on every single call adds up fast across an agent's many small invocations:
+
+```bash
+npm install --global @myceliumhq/sig
+```
+
 Run the daemon and `sig-server` on the same host (they're always co-located — `sig-server` reads
 the daemon's store and talks to its socket, same as the MCP server does):
 
@@ -51,11 +58,11 @@ export SIGNAL_ACCOUNT=+491700000000
 # export SIGNAL_CONFIG_DIR=/home/you/.local/share/signal-cli
 
 # 1) Start the ingestion daemon (long-lived — leave it running):
-npx @myceliumhq/sig daemon
+sig daemon
 
 # 2) In another shell, on the SAME host: start sig-server (also long-lived):
 export SIG_SERVER_TOKEN=$(openssl rand -hex 32)   # pick your own, keep it secret
-npx @myceliumhq/sig-server
+sig-server
 ```
 
 Then, from wherever you actually work — the same machine, or (the normal case) your laptop over
@@ -65,27 +72,27 @@ the network — point the `sig` CLI at it:
 export SIG_SERVER_URL=http://127.0.0.1:8420   # or wherever sig-server is reachable
 export SIG_SERVER_TOKEN=<the token you set above>
 
-npx @myceliumhq/sig doctor
-npx @myceliumhq/sig conversations
-npx @myceliumhq/sig messages --sender +491700000000 --limit 20
-npx @myceliumhq/sig search "dinner plans"
-npx @myceliumhq/sig contacts
-npx @myceliumhq/sig send +491700000000 "on my way"
-npx @myceliumhq/sig react +491700000000 👍 1699999999999
-npx @myceliumhq/sig attachments 1699999999999
-npx @myceliumhq/sig save-attachment sent:1699999999999:0 --out ./downloaded.jpg
+sig doctor
+sig conversations
+sig messages --sender +491700000000 --limit 20
+sig search "dinner plans"
+sig contacts
+sig send +491700000000 "on my way"
+sig react +491700000000 👍 1699999999999
+sig attachments 1699999999999
+sig save-attachment sent:1699999999999:0 --out ./downloaded.jpg
 ```
+
+No install available? Fall back to `npx @myceliumhq/sig <command>` for the CLI and
+`npx @myceliumhq/sig daemon` for the daemon (fetches and caches on first run, same commands
+otherwise). `sig-server` needs `npx -p @myceliumhq/sig sig-server` instead -- a bare
+`npx @myceliumhq/sig-server` won't work, that's not a real package name, `sig-server` is a *bin*
+inside `@myceliumhq/sig`, not its own package (npx only auto-resolves a bin matching the package's
+own unscoped name, "sig", without `-p`). Prefer the global install whenever you can, per above.
 
 Every `sig` command except `sig daemon` requires `SIG_SERVER_URL`/`SIG_SERVER_TOKEN` — there's no
 mode where the CLI reads the SQLite store or the daemon's socket directly. See "Remote mode" below
 for the full picture (why, and how it maps to the exit-code contract).
-
-Prefer a global install to skip `npx`'s resolve step on every call:
-
-```bash
-npm install --global @myceliumhq/sig
-sig doctor
-```
 
 See `sig <command> --help` for flags, or the bundled skill (`skills/signal/SKILL.md`) for the full
 command reference and decision guidance.
@@ -153,7 +160,7 @@ so point it at the same `SIGNAL_DB`:
 ```bash
 export SIGNAL_DB=/home/you/.local/state/sig/messages.db
 export EMBEDDING_PROVIDER=local   # zero-API-key CPU model; or openai-compatible, see semanticd's README
-npx -p @myceliumhq/sig sig-semanticd
+sig-semanticd   # or: npx -p @myceliumhq/sig sig-semanticd
 ```
 
 Or as a container: `ghcr.io/myceliumhq/sig-semanticd:<version>` (built from `Dockerfile.semanticd`,
@@ -183,7 +190,7 @@ owns the `signal-cli` child process directly, so running it "remotely" wouldn't 
 # On the same host as `sig daemon`:
 export SIGNAL_ACCOUNT=+491700000000
 export SIG_SERVER_TOKEN=$(openssl rand -hex 32)
-npx @myceliumhq/sig-server
+sig-server   # or: npx -p @myceliumhq/sig sig-server
 
 # From wherever you actually run `sig` (can be the same host, or anywhere reachable):
 export SIG_SERVER_URL=http://127.0.0.1:8420
