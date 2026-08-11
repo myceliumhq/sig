@@ -65,9 +65,20 @@ for exactly that reason — see `src/paths.ts`.
   `Authorization: Bearer <SIG_SERVER_TOKEN>` — no loopback bypass, unlike the MCP server's
   loopback-vs-non-loopback distinction, since sig-server's whole purpose is being reached
   remotely.
-- `src/ingest/` — the ingestion subsystem: `daemon.ts` (spawn/supervise signal-cli, auto-restart),
-  `parse.ts` (envelope parsing + `kind` classification: `message`/`receipt`/`sync-noise`),
-  `store.ts` (the SQLite layer on `node:sqlite`'s `DatabaseSync`, `UNIQUE(source, ts)` dedup).
+- `src/ingest/` — the ingestion subsystem: `daemon.ts` (spawn/supervise signal-cli, auto-restart;
+  also writes the `HEARTBEAT` activity-marker file and logs the active `SIGNAL_MAX_STORED` cap on
+  startup), `parse.ts` (envelope parsing + `kind` classification:
+  `message`/`reaction`/`receipt`/`sync-noise`, plus `toRemoteDelete()` for "delete for everyone"
+  events, handled as an UPDATE tombstone rather than an insert), `store.ts` (the SQLite layer on
+  `node:sqlite`'s `DatabaseSync`, `UNIQUE(source, ts)` dedup; prunes oldest rows past
+  `SIGNAL_MAX_STORED` every 100 inserts, along with orphaned attachment rows; every read query
+  excludes `deleted_at IS NOT NULL` rows by default). New columns land via an additive
+  `ALTER TABLE` migration guarded by a `PRAGMA table_info` check in the constructor -- there is a
+  real deployed production DB, so schema changes must never be destructive.
+- `src/send-rate-limit.ts` — a per-process, in-memory 5-second warn-not-block guard shared by
+  `createSendMessageTool`/`createSendReactionTool` (`src/tools/messaging.ts`): a send or reaction
+  within 5s of the previous one gets a `warning` field in the tool/HTTP result rather than being
+  blocked. Not persisted or cross-process by design (see the module's own comment).
 - `src/signal-client.ts` — thin JSON-RPC-over-Unix-socket client (newline-delimited JSON) for
   `send`/`sendReaction`/`listContacts`/`listGroups`, used by the MCP tools and `sig-server` (which
   the `sig` CLI now reaches indirectly, through those same tools).

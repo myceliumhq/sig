@@ -39,6 +39,14 @@ export interface DataMessage {
     targetSentTimestamp?: number;
     isRemove?: boolean;
   };
+  // "Delete for everyone" from someone else. Per signal-cli's own
+  // remote-delete.schema.json, `timestamp` is the ORIGINAL message's send
+  // timestamp being deleted -- NOT this envelope's own timestamp. Flattened
+  // as a sibling of `message`/`reaction` here, matching how every other
+  // field on this interface (quote, attachments, groupInfo) is already a
+  // flattened sibling rather than nested under some wrapper -- consistent
+  // with this codebase's established convention for this type.
+  remoteDelete?: { timestamp?: number };
 }
 
 export interface SentMessage {
@@ -50,6 +58,9 @@ export interface SentMessage {
   quote?: { id?: number; author?: string; text?: string | null };
   attachments?: Attachment[];
   groupInfo?: { groupId?: string; type?: string };
+  // Self-sent-then-deleted, synced from another linked device. Same shape/
+  // semantics as DataMessage.remoteDelete above.
+  remoteDelete?: { timestamp?: number };
 }
 
 export interface SyncMessage {
@@ -121,9 +132,60 @@ function rawAttachmentsOf(atts: Attachment[] | undefined): Attachment[] {
   return Array.isArray(atts) ? atts.filter((a) => typeof a.id === "string" && a.id !== "") : [];
 }
 
+export interface RemoteDeleteEvent {
+  // Conversation key the deleted message lives under (same derivation as
+  // toStoredRow's `source`).
+  source: string;
+  // The ORIGINAL message's send timestamp being deleted (remoteDelete.timestamp),
+  // matched against messages.ts via UPDATE ... WHERE source = ? AND ts = ?.
+  ts: number;
+  // When the delete itself happened -- this envelope's own timestamp, or
+  // Date.now() as a last resort.
+  deletedAt: number;
+}
+
+// Detect a "delete for everyone" event and, if present, return enough to
+// tombstone the original row via MessageStore.markDeleted -- checked BEFORE
+// toStoredRow (see ingest/daemon.ts) so the delete notification itself never
+// gets misclassified and inserted as a bogus empty-body message, the same
+// class of bug already fixed for reactions above. Returns null for every
+// other envelope shape, including non-`receive` notifications.
+export function toRemoteDelete(notification: ReceiveNotification): RemoteDeleteEvent | null {
+  if (notification.method !== "receive") return null;
+  const envelope = notification.params?.envelope;
+  if (!envelope || typeof envelope !== "object") return null;
+
+  const senderNumber = firstNonEmpty(envelope.sourceNumber, envelope.source, envelope.sourceUuid);
+  const deletedAt = envelope.timestamp ?? Date.now();
+
+  const dataDeleteTs = envelope.dataMessage?.remoteDelete?.timestamp;
+  if (dataDeleteTs !== undefined) {
+    const groupId = firstNonEmpty(envelope.dataMessage?.groupInfo?.groupId);
+    const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (senderNumber ?? "unknown");
+    return { source, ts: dataDeleteTs, deletedAt };
+  }
+
+  const sent = envelope.syncMessage?.sentMessage;
+  const sentDeleteTs = sent?.remoteDelete?.timestamp;
+  if (sentDeleteTs !== undefined) {
+    const groupId = firstNonEmpty(sent?.groupInfo?.groupId);
+    const destination = firstNonEmpty(
+      sent?.destinationNumber,
+      sent?.destination,
+      sent?.destinationUuid,
+    );
+    const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (destination ?? "self");
+    return { source, ts: sentDeleteTs, deletedAt };
+  }
+
+  return null;
+}
+
 // Turn one parsed stdout line into a StoredRow, or null if the line isn't a
 // `receive` notification at all (e.g. a JSON-RPC response to some command that
-// happens to share the socket, or an unparseable line).
+// happens to share the socket, or an unparseable line), OR is a remote-delete
+// event (handled separately via toRemoteDelete/MessageStore.markDeleted --
+// see ingest/daemon.ts -- rather than inserted as a new row).
 export function toStoredRow(notification: ReceiveNotification): StoredRow | null {
   if (notification.method !== "receive") return null;
   const envelope = notification.params?.envelope;
@@ -151,6 +213,9 @@ export function toStoredRow(notification: ReceiveNotification): StoredRow | null
   // "Note to Self").
   const sent = envelope.syncMessage?.sentMessage;
   if (sent) {
+    // Handled separately via toRemoteDelete -- see this function's own
+    // doc comment.
+    if (sent.remoteDelete) return null;
     const groupId = firstNonEmpty(sent.groupInfo?.groupId);
     const destination = firstNonEmpty(
       sent.destinationNumber,
@@ -173,6 +238,9 @@ export function toStoredRow(notification: ReceiveNotification): StoredRow | null
   // Incoming data message (text or attachment-only).
   const data = envelope.dataMessage;
   if (data) {
+    // Handled separately via toRemoteDelete -- see this function's own
+    // doc comment.
+    if (data.remoteDelete) return null;
     const groupId = firstNonEmpty(data.groupInfo?.groupId);
     const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (senderNumber ?? "unknown");
 

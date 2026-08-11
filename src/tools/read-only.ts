@@ -17,6 +17,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "signal_list_messages",
   "signal_search_messages",
   "signal_list_attachments",
+  "signal_whoami",
 ]);
 
 /**

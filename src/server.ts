@@ -200,6 +200,8 @@ async function handleSend(req: IncomingMessage, res: ServerResponse, deps: Deps)
   const recipient = form.get("recipient");
   const groupId = form.get("group_id");
   const message = form.get("message");
+  const replyToTsRaw = form.get("reply_to_ts");
+  const replyToAuthor = form.get("reply_to_author");
   // Staged under sig's own persistent attachments dir (same one received
   // attachments are copied into, see paths.ts's resolveAttachmentsDir), NOT
   // a cleaned-up os.tmpdir() path: outgoingAttachmentRows() (ingest/parse.ts)
@@ -219,11 +221,22 @@ async function handleSend(req: IncomingMessage, res: ServerResponse, deps: Deps)
       await writeFile(stagedPath, Buffer.from(await value.arrayBuffer()));
       stagedPaths.push(stagedPath);
     }
+    let replyToTs: number | undefined;
+    if (typeof replyToTsRaw === "string" && replyToTsRaw !== "") {
+      const n = Number(replyToTsRaw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new HttpError(400, `reply_to_ts must be a positive integer (got "${replyToTsRaw}")`);
+      }
+      replyToTs = n;
+    }
     const result = await deps.tools.send.execute(randomUUID(), {
       recipient: typeof recipient === "string" && recipient !== "" ? recipient : undefined,
       group_id: typeof groupId === "string" && groupId !== "" ? groupId : undefined,
       message: typeof message === "string" ? message : "",
       attachments: stagedPaths,
+      reply_to_ts: replyToTs,
+      reply_to_author:
+        typeof replyToAuthor === "string" && replyToAuthor !== "" ? replyToAuthor : undefined,
     });
     sendJson(res, 200, result.details);
   } catch (err) {

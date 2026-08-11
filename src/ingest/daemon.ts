@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
@@ -7,11 +7,12 @@ import {
   resolveConfigDir,
   resolveDbPath,
   resolveEffectiveConfigDir,
+  resolveHeartbeatPath,
   resolveSignalCliPath,
   resolveSocketPath,
 } from "../paths.js";
 import type { AttachmentRow, Attachment as ParsedAttachment, StoredRow } from "./parse.js";
-import { parseLine, toStoredRow } from "./parse.js";
+import { parseLine, toRemoteDelete, toStoredRow } from "./parse.js";
 import { MessageStore } from "./store.js";
 
 // The ingestion supervisor. This is the core new subsystem versus ppl/tri: sig
@@ -60,6 +61,9 @@ export interface DaemonConfig {
   // Where sig copies them to, so every other command only ever needs
   // SIGNAL_DB (see paths.ts resolveAttachmentsDir).
   attachmentsDestDir: string;
+  // Plain-text RFC3339 timestamp file an external watchdog can poll -- see
+  // the HEARTBEAT-writing logic below for exactly what it does/doesn't prove.
+  heartbeatPath: string;
 }
 
 export function resolveDaemonConfig(account: string): DaemonConfig {
@@ -71,6 +75,37 @@ export function resolveDaemonConfig(account: string): DaemonConfig {
     dbPath: resolveDbPath(),
     attachmentsSourceDir: join(resolveEffectiveConfigDir(), "attachments"),
     attachmentsDestDir: resolveAttachmentsDir(),
+    heartbeatPath: resolveHeartbeatPath(),
+  };
+}
+
+// At most once a minute, matching wacli's own rate limit -- this is an
+// ACTIVITY marker, not a liveness proof: a healthy-but-quiet session (no
+// incoming envelopes for a while) still touches it via the timer below, but
+// a genuinely wedged signal-cli process that stopped emitting stdout at all
+// AND whose timer got starved (e.g. the whole event loop is blocked) would
+// stop updating it too -- a watchdog should treat a stale file as "worth
+// investigating", not as gospel proof of a hang.
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+function createHeartbeat(path: string): { touch: (force?: boolean) => void; stop: () => void } {
+  let lastWriteMs = 0;
+  const write = () => {
+    lastWriteMs = Date.now();
+    try {
+      writeFileSync(path, `${new Date(lastWriteMs).toISOString()}\n`);
+    } catch {
+      // Best-effort -- an unwritable heartbeat path shouldn't crash ingestion.
+    }
+  };
+  write(); // initial touch on startup, so a watchdog sees freshness immediately
+  const timer = setInterval(write, HEARTBEAT_INTERVAL_MS);
+  timer.unref?.();
+  return {
+    touch: (force = false) => {
+      if (force || Date.now() - lastWriteMs >= HEARTBEAT_INTERVAL_MS) write();
+    },
+    stop: () => clearInterval(timer),
   };
 }
 
@@ -107,15 +142,17 @@ export async function runIngestionDaemon(
   const logger = options.logger ?? stderrDaemonLogger();
   const store = options.store ?? new MessageStore(config.dbPath);
   let backoff = BACKOFF_MIN_MS;
+  const heartbeat = createHeartbeat(config.heartbeatPath);
 
   logger.info(
-    `store ${config.dbPath} (${store.count()} rows), socket ${config.socketPath}, account ${config.account}`,
+    `store ${config.dbPath} (${store.count()} rows, cap ${store.maxStoredCap} -- see SIGNAL_MAX_STORED), ` +
+      `socket ${config.socketPath}, account ${config.account}, heartbeat ${config.heartbeatPath}`,
   );
 
   while (!options.signal?.aborted) {
     const startedAt = Date.now();
     try {
-      await runOnce(config, store, logger, options.signal);
+      await runOnce(config, store, logger, options.signal, heartbeat);
     } catch (err) {
       logger.error(`signal-cli supervision error: ${describe(err)}`);
     }
@@ -130,6 +167,7 @@ export async function runIngestionDaemon(
     backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
   }
 
+  heartbeat.stop();
   logger.info("shutdown requested; stopping supervisor");
   if (!options.store) store.close();
 }
@@ -141,6 +179,7 @@ function runOnce(
   store: MessageStore,
   logger: DaemonLogger,
   signal: AbortSignal | undefined,
+  heartbeat: { touch: (force?: boolean) => void; stop: () => void },
 ): Promise<void> {
   // A stale socket file from a previous unclean exit makes bind() fail; clear
   // it before starting (the daemon recreates it).
@@ -173,6 +212,32 @@ function runOnce(
   rl.on("line", (line) => {
     const notification = parseLine(line);
     if (!notification) return;
+    // Activity marker only (see createHeartbeat's doc comment) -- touch on
+    // every real stdout line signal-cli emits, throttled internally to at
+    // most once/minute.
+    heartbeat.touch();
+
+    // Remote-delete ("delete for everyone") events are handled as a
+    // tombstone UPDATE, not an insert -- checked first so toStoredRow never
+    // sees (and misclassifies) this notification shape at all.
+    const remoteDelete = toRemoteDelete(notification);
+    if (remoteDelete) {
+      try {
+        const affected = store.markDeleted(
+          remoteDelete.source,
+          remoteDelete.ts,
+          remoteDelete.deletedAt,
+        );
+        logger.info(
+          `remote delete for ${remoteDelete.source}:${remoteDelete.ts}` +
+            (affected ? "" : " (original message not found locally -- no-op)"),
+        );
+      } catch (err) {
+        logger.error(`failed to mark deleted: ${describe(err)}`);
+      }
+      return;
+    }
+
     const row = toStoredRow(notification);
     if (!row) return;
     seen += 1;

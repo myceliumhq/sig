@@ -8,6 +8,8 @@ const stubDeps = {
   client: {} as SignalToolDeps["client"],
   store: {} as SignalToolDeps["store"],
   semantic: { available: false } as SignalToolDeps["semantic"],
+  account: "+491700000000",
+  readOnly: false,
 };
 
 describe("read-only tool classification", () => {

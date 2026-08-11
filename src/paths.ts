@@ -85,3 +85,27 @@ export function resolveSignalCliPath(): string {
   const p = process.env.SIGNAL_CLI_PATH;
   return p && p.trim() !== "" ? p : "signal-cli";
 }
+
+const DEFAULT_MAX_STORED = 100_000;
+
+// Storage growth cap for MessageStore (mirrors the retired signal-mcp-server
+// prototype's SIGNAL_MCP_MAX_STORED). SIGNAL_MAX_STORED overrides; must be a
+// positive integer or the default (100,000) is used silently -- a malformed
+// value here shouldn't crash the daemon over something this low-stakes.
+export function resolveMaxStored(): number {
+  const raw = process.env.SIGNAL_MAX_STORED;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_MAX_STORED;
+}
+
+// Heartbeat file `sig daemon` touches with an RFC3339 timestamp so an
+// external watchdog (e.g. a homelab uptime monitor) can check the process is
+// alive and processing -- see ingest/daemon.ts for the honesty caveat (an
+// activity marker, not a liveness proof). Lives in the state dir alongside
+// the DB by default; SIGNAL_HEARTBEAT_PATH overrides.
+export function resolveHeartbeatPath(): string {
+  const override = process.env.SIGNAL_HEARTBEAT_PATH;
+  const path = override && override.trim() !== "" ? override : join(stateDir(), "HEARTBEAT");
+  mkdirSync(dirname(path), { recursive: true });
+  return path;
+}

@@ -57,5 +57,29 @@ export function createListGroupsTool(client: SignalClient): AnyAgentTool {
   };
 }
 
+const whoamiParams = Type.Object({});
+
+// Pure read, no signal-cli RPC needed at all -- `account` is already resolved
+// by the caller (mcp-server.ts's config / server.ts's SIGNAL_ACCOUNT) before
+// this tool is even constructed, so it just echoes it back. Added for a real
+// gap: an agent needed its own E.164 number (e.g. to message itself) and had
+// no discoverable way to ask -- `signal_list_contacts` only ever lists OTHER
+// people.
+export function createWhoamiTool(account: string, readOnly: boolean): AnyAgentTool {
+  return {
+    name: "signal_whoami",
+    label: "Show this account's own Signal number",
+    description:
+      "Return the E.164 phone number of the Signal account this server is linked to -- this " +
+      "account's own number, not a contact's. Use this instead of guessing when you need your own " +
+      "number (e.g. to send yourself a message).",
+    parameters: whoamiParams,
+    execute: async () => {
+      return toToolResult({ account, read_only: readOnly });
+    },
+  };
+}
+
 export type ListContactsParams = Static<typeof listContactsParams>;
 export type ListGroupsParams = Static<typeof listGroupsParams>;
+export type WhoamiParams = Static<typeof whoamiParams>;

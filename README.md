@@ -73,11 +73,13 @@ export SIG_SERVER_URL=http://127.0.0.1:8420   # or wherever sig-server is reacha
 export SIG_SERVER_TOKEN=<the token you set above>
 
 sig doctor
+sig whoami
 sig conversations
 sig messages --sender +491700000000 --limit 20
 sig search "dinner plans"
 sig contacts
 sig send +491700000000 "on my way"
+sig send +491700000000 "sounds good" --reply-to 1699999999999
 sig react +491700000000 👍 1699999999999
 sig attachments 1699999999999
 sig save-attachment sent:1699999999999:0 --out ./downloaded.jpg
@@ -126,6 +128,14 @@ journalctl --user -u sig.service -f   # logs (the daemon logs to stderr)
 
 On macOS, a `launchd` LaunchAgent with `KeepAlive` is the equivalent.
 
+The daemon also touches a plain-text `HEARTBEAT` file (`<state dir>/HEARTBEAT`, RFC3339 timestamp,
+`SIGNAL_HEARTBEAT_PATH` to override) at most once a minute — on real received activity, or on a
+timer if it's been quiet. An external watchdog (a homelab uptime monitor, a cron job) can alert on
+staleness. It's an **activity marker, not a liveness proof**: a healthy-but-quiet session still
+updates it via the timer, but it can't distinguish "genuinely wedged" from "the whole process is
+stuck" with certainty — treat a stale file as worth investigating, not as definitive proof of a
+hang.
+
 ## Configuration
 
 ### `sig daemon` (runs on the always-on host)
@@ -137,6 +147,8 @@ On macOS, a `launchd` LaunchAgent with `KeepAlive` is the equivalent.
 | `SIGNAL_CLI_PATH` | no | Path to the `signal-cli` binary. Default: `signal-cli` on `PATH` |
 | `SIGNAL_SOCKET` | no | Unix socket the daemon exposes. Default: `$XDG_RUNTIME_DIR/sig/signal-cli.sock` (or a short `/tmp` path). **Keep it short** (AF_UNIX ~104-char limit) |
 | `SIGNAL_DB` | no | SQLite store path. Default: `$XDG_STATE_HOME/sig/messages.db` (or `~/.local/state/sig/messages.db`) |
+| `SIGNAL_MAX_STORED` | no | Storage growth cap: oldest rows beyond this count are pruned (batched every 100 inserts), along with any now-orphaned attachment rows. Default `100000` |
+| `SIGNAL_HEARTBEAT_PATH` | no | Where the daemon writes its `HEARTBEAT` activity-marker file (see below). Default: `<state dir>/HEARTBEAT` |
 
 ### `sig` CLI (runs wherever you work)
 
@@ -214,7 +226,11 @@ content route): `GET /v1/health`, `GET /v1/contacts`, `GET /v1/groups`,
 `GET /v1/search?query=&limit=`, `GET /v1/attachments?ts=&sender=&group_id=` (metadata only, no
 filesystem paths), `GET /v1/attachments/:id/content` (streams the raw bytes),
 `POST /v1/react` (JSON body), `POST /v1/send` (`multipart/form-data`: `recipient`/`group_id`,
-`message`, zero or more `attachment` file parts).
+`message`, zero or more `attachment` file parts, optional `reply_to_ts`/`reply_to_author` to quote
+an earlier message -- the quoted text is auto-filled server-side from the local store when
+available). A `send`/`react` repeated within 5 seconds of the previous one (per-process) gets a
+non-fatal `warning` field in the response -- not blocked, just visible, so repeated rapid sends'
+risk of the account being rate-limited/flagged by Signal is surfaced rather than silent.
 
 This mirrors the homelab convention already used for `tri`/`ppl`: an `<APP>_URL` + `<APP>_TOKEN`
 pair, `Authorization: Bearer` to a reverse-proxied hostname — `sig` just names its own pair

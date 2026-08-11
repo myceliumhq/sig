@@ -80,7 +80,8 @@ export type SigServerClient = {
     target: SendTarget,
     message: string,
     attachmentPaths: string[],
-  ): Promise<{ timestamp: number | null }>;
+    reply?: { ts: number; author?: string },
+  ): Promise<{ timestamp: number | null; warning?: string }>;
   react(params: {
     target: SendTarget;
     emoji: string;
@@ -204,18 +205,22 @@ export function createSigServerClient(config: SigServerClientConfig): SigServerC
         truncated: d.truncated,
       };
     },
-    async send(target, message, attachmentPaths) {
+    async send(target, message, attachmentPaths, reply) {
       const form = new FormData();
       if ("groupId" in target) form.set("group_id", target.groupId);
       else form.set("recipient", target.recipient);
       form.set("message", message);
+      if (reply) {
+        form.set("reply_to_ts", String(reply.ts));
+        if (reply.author) form.set("reply_to_author", reply.author);
+      }
       for (const path of attachmentPaths) {
         const bytes = await readFile(path);
         form.append("attachment", new Blob([bytes]), basename(path));
       }
       const resp = await request("/v1/send", { method: "POST", body: form });
-      const d = (await resp.json()) as { timestamp?: number | null };
-      return { timestamp: d.timestamp ?? null };
+      const d = (await resp.json()) as { timestamp?: number | null; warning?: string };
+      return { timestamp: d.timestamp ?? null, warning: d.warning };
     },
     async react(params) {
       const body = {

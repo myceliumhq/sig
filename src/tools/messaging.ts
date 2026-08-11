@@ -3,7 +3,13 @@ import { type AnyAgentTool, toToolResult } from "../agent-tool.js";
 import { isE164 } from "../e164.js";
 import { outgoingAttachmentRows, outgoingRowFromLocalSend } from "../ingest/parse.js";
 import type { MessageStore } from "../ingest/store.js";
+import { createSendRateLimiter } from "../send-rate-limit.js";
 import type { SendTarget, SignalClient } from "../signal-client.js";
+
+// Shared, module-level rate limiter for both send and react below -- one
+// clock per process (see send-rate-limit.ts), covering both tools since a
+// burst of either is equally spammy.
+const checkSendRateLimit = createSendRateLimiter();
 
 // Write tools. Both resolve to a 1:1 recipient (a phone number) OR a group id,
 // never both -- the schema keeps them mutually exclusive at the type level and
@@ -52,6 +58,20 @@ const sendMessageParams = Type.Object({
         "before calling this).",
     }),
   ),
+  reply_to_ts: Type.Optional(
+    Type.Integer({
+      description:
+        "Quote/reply to a specific message by its send timestamp (`ts` from signal_list_messages). " +
+        "The quoted text is auto-filled from this account's own local store when available.",
+    }),
+  ),
+  reply_to_author: Type.Optional(
+    Type.String({
+      description:
+        "Phone number of the author of the quoted message. Defaults to `recipient` for a 1:1 chat; " +
+        "required (alongside reply_to_ts) when replying in a group.",
+    }),
+  ),
 });
 
 // `store` is where a sent message is recorded locally: Signal's protocol
@@ -72,7 +92,27 @@ export function createSendMessageTool(client: SignalClient, store: MessageStore)
     execute: async (_id, params: Static<typeof sendMessageParams>) => {
       const target = resolveTarget(params.recipient, params.group_id);
       const attachments = params.attachments ?? [];
-      const result = await client.send(target, params.message, attachments);
+
+      let quote: { timestamp: number; author: string; message?: string } | undefined;
+      if (params.reply_to_ts !== undefined) {
+        const quoteAuthor = params.reply_to_author ?? params.recipient;
+        if (!quoteAuthor) {
+          throw new Error(
+            "reply_to_author is required (defaults to recipient for 1:1; must be given for a group)",
+          );
+        }
+        requireE164(quoteAuthor, "reply_to_author");
+        // Auto-fill the quoted text from this account's own local store
+        // rather than requiring the caller to already know it -- the store
+        // has direct access, same idea as sig-server looking up an
+        // attachment's local path by id.
+        const quotedSource = "groupId" in target ? `group:${target.groupId}` : quoteAuthor;
+        const quoted = store.getMessage(quotedSource, params.reply_to_ts);
+        quote = { timestamp: params.reply_to_ts, author: quoteAuthor, message: quoted?.body };
+      }
+
+      const warning = checkSendRateLimit();
+      const result = await client.send(target, params.message, attachments, quote);
       const ts = result.timestamp ?? null;
       if (ts !== null) {
         const source = "groupId" in target ? `group:${target.groupId}` : target.recipient;
@@ -94,6 +134,7 @@ export function createSendMessageTool(client: SignalClient, store: MessageStore)
         target,
         timestamp: ts,
         attachments: attachments.length,
+        ...(warning ? { warning } : {}),
       });
     },
   };
@@ -147,6 +188,7 @@ export function createSendReactionTool(client: SignalClient): AnyAgentTool {
         );
       }
       requireE164(targetAuthor, "target_author");
+      const warning = checkSendRateLimit();
       await client.sendReaction({
         target,
         emoji: params.emoji,
@@ -161,6 +203,7 @@ export function createSendReactionTool(client: SignalClient): AnyAgentTool {
         target_author: targetAuthor,
         target_timestamp: params.target_timestamp,
         emoji: params.emoji,
+        ...(warning ? { warning } : {}),
       });
     },
   };

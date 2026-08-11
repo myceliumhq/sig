@@ -12,7 +12,11 @@ import { isLoopbackHost, readStandaloneConfig, readTransportConfig } from "./mcp
 import { resolveDbPath, resolveSocketPath } from "./paths.js";
 import { createSemanticSearchCore, type Logger } from "./semantic/handle.js";
 import { createSignalClient } from "./signal-client.js";
-import { createListContactsTool, createListGroupsTool } from "./tools/directory.js";
+import {
+  createListContactsTool,
+  createListGroupsTool,
+  createWhoamiTool,
+} from "./tools/directory.js";
 import {
   createListAttachmentsTool,
   createListConversationsTool,
@@ -47,6 +51,8 @@ export function createAllTools(deps: {
   client: ReturnType<typeof createSignalClient>;
   store: MessageStore;
   semantic: ReturnType<typeof createSemanticSearchCore>;
+  account: string;
+  readOnly: boolean;
 }): AnyAgentTool[] {
   return [
     createSearchMessagesTool(deps.store, deps.semantic),
@@ -55,6 +61,7 @@ export function createAllTools(deps: {
     createListAttachmentsTool(deps.store),
     createListContactsTool(deps.client),
     createListGroupsTool(deps.client),
+    createWhoamiTool(deps.account, deps.readOnly),
     createSendMessageTool(deps.client, deps.store),
     createSendReactionTool(deps.client),
   ];
@@ -74,7 +81,13 @@ async function main(): Promise<void> {
   });
   const semantic = createSemanticSearchCore({ config: config.semanticSearch, logger });
 
-  const allTools = createAllTools({ client, store, semantic });
+  const allTools = createAllTools({
+    client,
+    store,
+    semantic,
+    account: config.account,
+    readOnly: config.readOnly,
+  });
 
   // SIGNAL_READ_ONLY=true is a hard trim: the write tools are never handed to
   // createMcpServer, so they never appear in tools/list and there's no handler

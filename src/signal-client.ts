@@ -61,12 +61,20 @@ export type Group = {
 
 export type SendTarget = { recipient: string } | { groupId: string };
 
+// A reply-to quote, mapped onto signal-cli's `send` RPC's own
+// quoteTimestamp/quoteAuthor/quoteMessage params -- verified live against a
+// real account (send, note its ts, send a second message quoting it): the
+// daemon accepts the camelCase names, same convention as every other RPC
+// param here (recipient/groupId/targetAuthor/targetTimestamp above).
+export type SendQuote = { timestamp: number; author: string; message?: string };
+
 export type SignalClient = {
   account: string;
   send(
     target: SendTarget,
     message: string,
     attachments?: string[],
+    quote?: SendQuote,
   ): Promise<{ timestamp?: number } & Record<string, unknown>>;
   sendReaction(params: {
     target: SendTarget;
@@ -182,7 +190,7 @@ export function createSignalClient(options: SignalClientOptions): SignalClient {
 
   return {
     account,
-    async send(target, message, attachments) {
+    async send(target, message, attachments, quote) {
       const result = await rpcCall(
         options,
         "send",
@@ -190,6 +198,13 @@ export function createSignalClient(options: SignalClientOptions): SignalClient {
           ...targetParams(target),
           message,
           ...(attachments && attachments.length > 0 ? { attachments } : {}),
+          ...(quote
+            ? {
+                quoteTimestamp: quote.timestamp,
+                quoteAuthor: quote.author,
+                ...(quote.message !== undefined ? { quoteMessage: quote.message } : {}),
+              }
+            : {}),
         }),
       );
       return (result ?? {}) as { timestamp?: number } & Record<string, unknown>;

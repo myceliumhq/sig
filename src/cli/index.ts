@@ -13,6 +13,7 @@ import { registerReact } from "./commands/react.js";
 import { registerSaveAttachment } from "./commands/save-attachment.js";
 import { registerSearch } from "./commands/search.js";
 import { registerSend } from "./commands/send.js";
+import { registerWhoami } from "./commands/whoami.js";
 
 const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
 const { version } = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version: string };
@@ -33,6 +34,7 @@ registerGroups(program);
 registerSend(program);
 registerReact(program);
 registerDoctor(program);
+registerWhoami(program);
 
 runProgram(program, process.argv.slice(2)).then((code) => {
   process.exitCode = code;

@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { resolveDbPath } from "../paths.js";
+import { resolveDbPath, resolveMaxStored } from "../paths.js";
 import type { AttachmentRow, StoredRow } from "./parse.js";
 
 // SQLite message store, shared across processes: the `sig daemon` process
@@ -59,6 +59,9 @@ const SCHEMA = `
     received_at  INTEGER NOT NULL,
     UNIQUE(source, ts)
   );
+  -- deleted_at is added via an additive migration below (ensureDeletedAtColumn),
+  -- NOT here: CREATE TABLE IF NOT EXISTS is a no-op against the already-existing
+  -- production table, so a new column can only ever land via ALTER TABLE.
   CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source);
   CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
   CREATE INDEX IF NOT EXISTS idx_messages_kind ON messages(kind);
@@ -81,10 +84,18 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(source, ts);
 `;
 
+// Every 100 inserts, sweep the store back down to the configured cap (mirrors
+// the retired signal-mcp-server prototype's PRUNE_EVERY_N_INSERTS -- batching
+// the DELETE avoids running a full prune on every single insert while still
+// keeping storage bounded in practice).
+const PRUNE_EVERY_N_INSERTS = 100;
+
 export class MessageStore {
   private db: DatabaseSync;
+  private readonly maxStored: number;
+  private insertsSincePrune = 0;
 
-  constructor(dbPath: string = resolveDbPath()) {
+  constructor(dbPath: string = resolveDbPath(), maxStored: number = resolveMaxStored()) {
     // Ensure the parent dir exists (":memory:" has no dirname worth creating) so
     // the store never depends on the caller having made it first.
     if (dbPath !== ":memory:") {
@@ -97,6 +108,23 @@ export class MessageStore {
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA);
+    this.ensureDeletedAtColumn();
+    this.maxStored = maxStored;
+  }
+
+  // Additive migration for the remote-delete tombstone column. There is a
+  // real, already-deployed production DB whose `messages` table was created
+  // long before `deleted_at` existed -- CREATE TABLE IF NOT EXISTS above is a
+  // no-op against it, so the only safe way to add the column is ALTER TABLE,
+  // guarded by a check (PRAGMA table_info) so re-running this on a database
+  // that already has the column is also a no-op rather than an error.
+  private ensureDeletedAtColumn(): void {
+    const columns = this.db.prepare("PRAGMA table_info(messages)").all() as unknown as {
+      name: string;
+    }[];
+    if (!columns.some((c) => c.name === "deleted_at")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN deleted_at INTEGER");
+    }
   }
 
   insert(row: StoredRow): boolean {
@@ -118,7 +146,54 @@ export class MessageStore {
       row.payload,
       row.receivedAt,
     );
+    this.insertsSincePrune += 1;
+    if (this.insertsSincePrune >= PRUNE_EVERY_N_INSERTS) {
+      this.insertsSincePrune = 0;
+      this.prune();
+    }
     return result.changes > 0;
+  }
+
+  // Mark an existing row as remotely deleted ("delete for everyone") rather
+  // than removing it -- an auditable tombstone, not a silent drop, matching
+  // wacli's design. `(source, ts)` is the same natural key insert() dedups
+  // on. If the original message hasn't been ingested yet (or never will be,
+  // e.g. the daemon started after it), this simply affects 0 rows -- that is
+  // not an error, the delete event is just a no-op tombstone-of-nothing.
+  markDeleted(source: string, ts: number, deletedAt: number): boolean {
+    const stmt = this.db.prepare("UPDATE messages SET deleted_at = ? WHERE source = ? AND ts = ?");
+    const result = stmt.run(deletedAt, source, ts);
+    return result.changes > 0;
+  }
+
+  // Delete the oldest rows beyond the configured cap, then sweep any
+  // attachment rows whose parent message no longer exists (either pruned
+  // just now, or from some earlier direct deletion) -- run together so
+  // attachments never outlive the message they belong to.
+  private prune(): void {
+    this.db
+      .prepare(
+        "DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT ?)",
+      )
+      .run(this.maxStored);
+    this.pruneOrphanedAttachments();
+  }
+
+  // Public so it can be unit-tested directly and so a caller (e.g. a future
+  // maintenance command) can run it standalone without waiting for the next
+  // prune batch.
+  pruneOrphanedAttachments(): void {
+    this.db.exec(
+      `DELETE FROM attachments
+        WHERE NOT EXISTS (
+          SELECT 1 FROM messages m WHERE m.source = attachments.source AND m.ts = attachments.ts
+        )`,
+    );
+  }
+
+  // The active cap, for the daemon's startup log line (see ingest/daemon.ts).
+  get maxStoredCap(): number {
+    return this.maxStored;
   }
 
   insertAttachment(row: AttachmentRow): boolean {
@@ -208,10 +283,10 @@ export class MessageStore {
            JOIN (
              SELECT source, MAX(ts) AS maxTs, COUNT(*) AS cnt
                FROM messages
-              WHERE kind = 'message'
+              WHERE kind = 'message' AND deleted_at IS NULL
               GROUP BY source
            ) c ON c.source = m.source AND c.maxTs = m.ts
-          WHERE m.kind = 'message'
+          WHERE m.kind = 'message' AND m.deleted_at IS NULL
           ORDER BY m.ts DESC
           LIMIT ?`,
       )
@@ -223,7 +298,7 @@ export class MessageStore {
   // rows -- receipts/sync-noise are queryable via rawByKind if ever needed but
   // never appear in the message list an agent reads.
   messages(filter: MessageFilter): MessageRow[] {
-    const clauses = ["kind = 'message'"];
+    const clauses = ["kind = 'message'", "deleted_at IS NULL"];
     const params: (string | number)[] = [];
     if (filter.sender !== undefined) {
       // Match against either the conversation key or the sender field so a
@@ -263,7 +338,7 @@ export class MessageStore {
         `SELECT source, ts, kind, direction, sender, sender_name AS senderName,
                 group_id AS groupId, body, attachments
            FROM messages
-          WHERE kind = 'message' AND body != ''
+          WHERE kind = 'message' AND deleted_at IS NULL AND body != ''
             AND LOWER(body) LIKE LOWER(?) ESCAPE '\\'
           ORDER BY ts DESC
           LIMIT ?`,
@@ -280,7 +355,7 @@ export class MessageStore {
       `SELECT source, ts, kind, direction, sender, sender_name AS senderName,
               group_id AS groupId, body, attachments
          FROM messages
-        WHERE source = ? AND ts = ?`,
+        WHERE source = ? AND ts = ? AND deleted_at IS NULL`,
     );
     for (const id of ids) {
       const parsed = parseMessageId(id);
@@ -289,6 +364,22 @@ export class MessageStore {
       if (row) map.set(id, row);
     }
     return map;
+  }
+
+  // Look up a single stored message by its natural (source, ts) key. Used to
+  // auto-fill a reply's quoted text server-side (--reply-to / reply_to_ts,
+  // see tools/messaging.ts and server.ts) rather than requiring the caller
+  // to already know the quoted message's body.
+  getMessage(source: string, ts: number): MessageRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT source, ts, kind, direction, sender, sender_name AS senderName,
+                group_id AS groupId, body, attachments
+           FROM messages
+          WHERE source = ? AND ts = ? AND deleted_at IS NULL`,
+      )
+      .get(source, ts) as unknown as MessageRow | undefined;
+    return row ?? null;
   }
 
   // --- Semantic source-adapter support ---
@@ -301,7 +392,7 @@ export class MessageStore {
       .prepare(
         `SELECT source, ts, body
            FROM messages
-          WHERE kind = 'message' AND body != '' AND ts > ?
+          WHERE kind = 'message' AND deleted_at IS NULL AND body != '' AND ts > ?
           ORDER BY ts ASC
           LIMIT ?`,
       )
@@ -313,7 +404,7 @@ export class MessageStore {
     const rows = this.db
       .prepare(
         `SELECT source, ts FROM messages
-          WHERE kind = 'message' AND body != ''
+          WHERE kind = 'message' AND deleted_at IS NULL AND body != ''
           ORDER BY ts ASC`,
       )
       .all() as unknown as { source: string; ts: number }[];
@@ -324,7 +415,7 @@ export class MessageStore {
     const parsed = parseMessageId(id);
     if (!parsed) return "";
     const row = this.db
-      .prepare("SELECT body FROM messages WHERE source = ? AND ts = ?")
+      .prepare("SELECT body FROM messages WHERE source = ? AND ts = ? AND deleted_at IS NULL")
       .get(parsed.source, parsed.ts) as unknown as { body?: string } | undefined;
     return row?.body ?? "";
   }
