@@ -26,6 +26,32 @@ describe("toStoredRow classification", () => {
     });
   });
 
+  it("classifies an incoming reaction with a real, searchable body instead of an empty one", () => {
+    const row = toStoredRow(
+      receive({
+        source: "+491230001",
+        sourceNumber: "+491230001",
+        sourceName: "Alice",
+        timestamp: 2000,
+        dataMessage: {
+          reaction: {
+            emoji: "👍",
+            targetAuthor: "+491230009",
+            targetSentTimestamp: 1999,
+            isRemove: false,
+          },
+        },
+      }),
+    );
+    expect(row).toMatchObject({
+      source: "+491230001",
+      kind: "reaction",
+      direction: "incoming",
+      body: "reacted 👍 to message from +491230009 @ 1999",
+      attachments: 0,
+    });
+  });
+
   it("keys an incoming group message on group:<id>", () => {
     const row = toStoredRow(
       receive({

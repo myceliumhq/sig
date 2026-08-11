@@ -17,7 +17,7 @@
 // Every row gets an explicit `kind` so the classification is decided exactly
 // once, here, rather than re-derived ad hoc at each read site.
 
-export type MessageKind = "message" | "receipt" | "sync-noise";
+export type MessageKind = "message" | "reaction" | "receipt" | "sync-noise";
 export type Direction = "incoming" | "outgoing";
 
 export interface Attachment {
@@ -170,14 +170,34 @@ export function toStoredRow(notification: ReceiveNotification): StoredRow | null
     };
   }
 
-  // Incoming data message (text, attachment-only, or a reaction). A reaction
-  // with no message body is still a real message-kind row (it carries an
-  // emoji), just with an empty body -- so it's excluded from semantic indexing
-  // (body-empty filter) without needing a separate kind.
+  // Incoming data message (text or attachment-only).
   const data = envelope.dataMessage;
   if (data) {
     const groupId = firstNonEmpty(data.groupInfo?.groupId);
     const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (senderNumber ?? "unknown");
+
+    // A reaction from someone else arrives as a dataMessage carrying only
+    // `reaction`, no `message` text -- previously this fell through to the
+    // generic branch below and was stored as an empty-body "message" row,
+    // silently discarding the actual reaction (which emoji, on what
+    // message). Give it its own kind with a real, searchable body instead.
+    if (data.reaction) {
+      const emoji = data.reaction.emoji ?? "?";
+      const targetAuthor = data.reaction.targetAuthor ?? "?";
+      const targetTs = data.reaction.targetSentTimestamp ?? "?";
+      const verb = data.reaction.isRemove ? "removed reaction" : "reacted";
+      return {
+        ...base,
+        source,
+        kind: "reaction",
+        direction: "incoming",
+        groupId,
+        body: `${verb} ${emoji} to message from ${targetAuthor} @ ${targetTs}`,
+        attachments: 0,
+        rawAttachments: [],
+      };
+    }
+
     return {
       ...base,
       source,
