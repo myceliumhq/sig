@@ -1,6 +1,6 @@
 {
   "name": "@myceliumhq/sig",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Agent-facing CLI for Signal messenger (built on signal-cli). Also ships a standalone MCP server and an ingestion daemon for shell-less hosts.",
   "type": "module",
   "packageManager": "pnpm@11.20.0",
