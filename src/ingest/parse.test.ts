@@ -52,6 +52,21 @@ describe("toStoredRow classification", () => {
     });
   });
 
+  it("reads an attachment's filename from signal-cli's real JSON key (lowercase, not fileName)", () => {
+    const row = toStoredRow(
+      receive({
+        source: "+491230001",
+        sourceNumber: "+491230001",
+        timestamp: 1050,
+        dataMessage: {
+          message: "see attached",
+          attachments: [{ id: "att-1", filename: "photo.jpg", contentType: "image/jpeg" }],
+        },
+      }),
+    );
+    expect(row?.rawAttachments).toMatchObject([{ id: "att-1", filename: "photo.jpg" }]);
+  });
+
   it("keys an incoming group message on group:<id>", () => {
     const row = toStoredRow(
       receive({
@@ -80,6 +95,37 @@ describe("toStoredRow classification", () => {
     });
   });
 
+  it("classifies a synced sent reaction with a real, searchable body instead of an empty one", () => {
+    // signal-cli's JsonSyncDataMessage unwraps JsonDataMessage, so a
+    // reaction you sent (synced from another linked device) arrives as a
+    // flat sibling of destination/message here, same as the incoming case
+    // above -- must not fall through to the generic outgoing-message branch.
+    const row = toStoredRow(
+      receive({
+        source: "+490000",
+        timestamp: 2100,
+        syncMessage: {
+          sentMessage: {
+            destinationNumber: "+491230009",
+            reaction: {
+              emoji: "🎉",
+              targetAuthor: "+491230009",
+              targetSentTimestamp: 2050,
+              isRemove: false,
+            },
+          },
+        },
+      }),
+    );
+    expect(row).toMatchObject({
+      source: "+491230009",
+      kind: "reaction",
+      direction: "outgoing",
+      body: "reacted 🎉 to message from +491230009 @ 2050",
+      attachments: 0,
+    });
+  });
+
   it("classifies bare and typed sync messages as sync-noise", () => {
     expect(toStoredRow(receive({ source: "+490000", timestamp: 1, syncMessage: {} }))?.kind).toBe(
       "sync-noise",
@@ -99,11 +145,38 @@ describe("toStoredRow classification", () => {
     expect(row?.body).toBe("");
   });
 
-  it("ignores non-receive notifications", () => {
+  it("ignores JSON-RPC command responses sharing the same socket/stdout", () => {
+    // A real command response (e.g. to a `listContacts` RPC call) never
+    // carries an `envelope` key at all -- it has `result` instead. No
+    // envelope means nothing to classify, regardless of `method`.
     expect(
-      toStoredRow({ jsonrpc: "2.0", method: "listContacts", params: { envelope: {} } }),
+      toStoredRow({ jsonrpc: "2.0", id: 1, result: ["+491230001"] } as ReceiveNotification),
     ).toBeNull();
     expect(toStoredRow({ jsonrpc: "2.0" } as ReceiveNotification)).toBeNull();
+  });
+
+  it("classifies the flat shape signal-cli 0.14.7 actually sends (no jsonrpc/method wrapper)", () => {
+    // Live-verified real production output: {"envelope":{...},"account":"..."}
+    // -- see this file's header comment. Previously misclassified as "not a
+    // receive notification" (no `method` field) and silently dropped, which
+    // meant every real incoming/sync-sent message was lost.
+    const row = toStoredRow({
+      envelope: {
+        source: "+491230001",
+        sourceNumber: "+491230001",
+        sourceName: "Alice",
+        timestamp: 1000,
+        dataMessage: { message: "hi there" },
+      },
+      account: "+491230002",
+    } as ReceiveNotification);
+    expect(row).toMatchObject({
+      source: "+491230001",
+      kind: "message",
+      direction: "incoming",
+      sender: "+491230001",
+      body: "hi there",
+    });
   });
 
   it("does not misclassify a remote-delete data message as an empty-body message", () => {

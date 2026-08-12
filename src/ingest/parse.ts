@@ -1,7 +1,21 @@
 // Envelope parsing + classification. signal-cli (with `-o json`) pushes every
-// received item to the daemon's stdout as a JSON-RPC notification:
+// received item to the daemon's stdout. Live-verified against a real account
+// (2026-08-12) that this is a FLAT object, not a JSON-RPC-wrapped
+// notification:
 //
-//   {"jsonrpc":"2.0","method":"receive","params":{"envelope":{...}}}
+//   {"envelope":{...},"account":"+491700000000"}
+//
+// NOT the `{"jsonrpc":"2.0","method":"receive","params":{"envelope":{...}}}`
+// shape this file previously assumed -- that assumption was never actually
+// exercised against a live receive (only outgoing/self-sent rows, written
+// directly by outgoingRowFromLocalSend below, had ever been verified), so it
+// silently dropped every single incoming envelope at the `method !== "receive"`
+// gate with no error logged (by design, to ignore unrelated JSON-RPC command
+// responses sharing the same socket/stdout). extractEnvelope() below accepts
+// both shapes -- the flat one signal-cli 0.14.7 actually sends, and the
+// wrapped one in case a future signal-cli version reintroduces it -- and
+// still ignores plain command responses (`{"jsonrpc":"2.0","result":...}`),
+// which never carry an `envelope` key at all.
 //
 // The envelope shape varies by item type (verified live against a real
 // account):
@@ -22,7 +36,12 @@ export type Direction = "incoming" | "outgoing";
 
 export interface Attachment {
   id?: string;
-  fileName?: string | null;
+  // signal-cli's own JsonAttachment record field is `filename` (lowercase
+  // n), NOT `fileName` -- live-verified against signal-cli 0.14.7's actual
+  // source (org.asamk.signal.json.JsonAttachment). The `fileName` spelling
+  // silently read as undefined on every real envelope, so every stored
+  // attachment's filename was always null even when signal-cli sent one.
+  filename?: string | null;
   contentType?: string | null;
   size?: number;
 }
@@ -58,6 +77,19 @@ export interface SentMessage {
   quote?: { id?: number; author?: string; text?: string | null };
   attachments?: Attachment[];
   groupInfo?: { groupId?: string; type?: string };
+  // signal-cli's JsonSyncDataMessage wraps JsonDataMessage with
+  // @JsonUnwrapped -- every JsonDataMessage field (reaction included) is a
+  // flat sibling of destination/destinationNumber/etc. here, exactly like
+  // DataMessage above. A synced *sent* reaction therefore needs the same
+  // dedicated handling as an incoming one (see toStoredRow's `data.reaction`
+  // branch) -- without this field it silently fell through to the generic
+  // outgoing-message branch and got stored as an empty-body message.
+  reaction?: {
+    emoji?: string;
+    targetAuthor?: string;
+    targetSentTimestamp?: number;
+    isRemove?: boolean;
+  };
   // Self-sent-then-deleted, synced from another linked device. Same shape/
   // semantics as DataMessage.remoteDelete above.
   remoteDelete?: { timestamp?: number };
@@ -85,6 +117,18 @@ export interface ReceiveNotification {
   jsonrpc?: string;
   method?: string;
   params?: { envelope?: Envelope };
+  // The shape signal-cli 0.14.7 actually sends (see this file's header
+  // comment) -- a bare envelope + account, no JSON-RPC wrapper.
+  envelope?: Envelope;
+  account?: string;
+}
+
+// Pulls the envelope out of either shape described in this file's header
+// comment. A plain JSON-RPC command response (`{"jsonrpc":"2.0","result":...}`)
+// has neither `envelope` key and correctly yields undefined here, so callers
+// that gate on this can't misclassify command responses as messages.
+function extractEnvelope(notification: ReceiveNotification): Envelope | undefined {
+  return notification.envelope ?? notification.params?.envelope;
 }
 
 // A row ready to persist. `source` is the *conversation key* -- the stable id a
@@ -151,8 +195,7 @@ export interface RemoteDeleteEvent {
 // class of bug already fixed for reactions above. Returns null for every
 // other envelope shape, including non-`receive` notifications.
 export function toRemoteDelete(notification: ReceiveNotification): RemoteDeleteEvent | null {
-  if (notification.method !== "receive") return null;
-  const envelope = notification.params?.envelope;
+  const envelope = extractEnvelope(notification);
   if (!envelope || typeof envelope !== "object") return null;
 
   const senderNumber = firstNonEmpty(envelope.sourceNumber, envelope.source, envelope.sourceUuid);
@@ -187,8 +230,7 @@ export function toRemoteDelete(notification: ReceiveNotification): RemoteDeleteE
 // event (handled separately via toRemoteDelete/MessageStore.markDeleted --
 // see ingest/daemon.ts -- rather than inserted as a new row).
 export function toStoredRow(notification: ReceiveNotification): StoredRow | null {
-  if (notification.method !== "receive") return null;
-  const envelope = notification.params?.envelope;
+  const envelope = extractEnvelope(notification);
   if (!envelope || typeof envelope !== "object") return null;
 
   const ts =
@@ -223,6 +265,29 @@ export function toStoredRow(notification: ReceiveNotification): StoredRow | null
       sent.destinationUuid,
     );
     const source = groupId ? `${CONVERSATION_GROUP_PREFIX}${groupId}` : (destination ?? "self");
+
+    // A synced *sent* reaction -- same shape/reasoning as the incoming
+    // `data.reaction` branch below (see SentMessage.reaction's doc comment
+    // for why this exists as a flat sibling here too). Checked before the
+    // generic outgoing-message fallback so it isn't stored as an empty-body
+    // "message" row.
+    if (sent.reaction) {
+      const emoji = sent.reaction.emoji ?? "?";
+      const targetAuthor = sent.reaction.targetAuthor ?? "?";
+      const targetTs = sent.reaction.targetSentTimestamp ?? "?";
+      const verb = sent.reaction.isRemove ? "removed reaction" : "reacted";
+      return {
+        ...base,
+        source,
+        kind: "reaction",
+        direction: "outgoing",
+        groupId,
+        body: `${verb} ${emoji} to message from ${targetAuthor} @ ${targetTs}`,
+        attachments: 0,
+        rawAttachments: [],
+      };
+    }
+
     return {
       ...base,
       source,
