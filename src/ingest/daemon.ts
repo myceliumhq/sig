@@ -308,7 +308,7 @@ function ingestAttachments(
       }
       const inserted = store.insertAttachment(attachmentRow(row, att, destPath));
       if (inserted)
-        logger.info(`ingested attachment ${id} (${att.fileName ?? att.contentType ?? "?"})`);
+        logger.info(`ingested attachment ${id} (${att.filename ?? att.contentType ?? "?"})`);
     } catch (err) {
       logger.error(`failed to copy attachment ${id}: ${describe(err)}`);
     }
@@ -320,7 +320,7 @@ function attachmentRow(row: StoredRow, att: ParsedAttachment, localPath: string)
     id: att.id as string,
     source: row.source,
     ts: row.ts,
-    fileName: att.fileName ?? null,
+    fileName: att.filename ?? null,
     contentType: att.contentType ?? null,
     size: att.size ?? null,
     localPath,
