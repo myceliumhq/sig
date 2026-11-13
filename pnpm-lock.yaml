@@ -4,19 +4,22 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  zod@>=4.0.0 <4.6.6: 4.6.7
+
 importers:
 
   .:
     dependencies:
       '@myceliumhq/index':
         specifier: ^1.1.1
-        version: 1.1.1(@types/node@26.6.6)(zod@4.4.3)
+        version: 1.1.1(@types/node@26.6.6)(zod@4.6.7)
       '@myceliumhq/mcp':
         specifier: ^0.1.0
-        version: 0.1.0(supports-color@7.2.0)(zod@4.4.3)
+        version: 0.1.0(supports-color@7.2.0)(zod@4.6.7)
       '@myceliumhq/semanticd':
         specifier: ^1.2.0
-        version: 1.2.0(@types/node@26.6.6)(zod@4.4.3)
+        version: 1.2.0(@types/node@26.6.6)(zod@4.6.7)
       '@myceliumhq/toolkit':
         specifier: ^0.1.0
         version: 0.1.0
@@ -67,19 +70,19 @@ packages:
     resolution: {integrity: sha512-N+n+7oHGtx4PtetjcBSe48ANVrcHTVV3rJtEfrPMUJMtak2Iw3aDhDFf7nxfpqKVEPMf7XvQ1dJ9yexdMEJiSw==}
     engines: {node: '>=22'}
     peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
+      zod: 4.6.7
 
   '@ai-sdk/openai-compatible@3.0.90':
     resolution: {integrity: sha512-XIPiZ483cAnELGJ4xjYIqqnQWE/qRmL5YWx+1fFrVbA2yg1ioJAvv2Qs26bg21XwaxT3GSGIviBejKFqeZR/JQ==}
     engines: {node: '>=22'}
     peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
+      zod: 4.6.7
 
   '@ai-sdk/provider-utils@5.0.79':
     resolution: {integrity: sha512-IYu6MT0NDE3JFWBWEJWAXjhskHTSj6NfRp9FuEAOcyS2Jrj3qBePu7OEoXVmoCWT3pYPgrF4DBKzjjjOMRyw9Q==}
     engines: {node: '>=22'}
     peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
+      zod: 4.6.7
 
   '@ai-sdk/provider@4.0.37':
     resolution: {integrity: sha512-4uPgZ3qiX/JaQFr0dQoibUzHImZit9u05ro2BxGUnJwU4fV28BOAbKUa2OjQvqtM1tMac3bTKkaXdyzGovQXqg==}
@@ -511,7 +514,7 @@ packages:
     engines: {node: '>=18'}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
-      zod: ^3.25 || ^4.0
+      zod: 4.6.7
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
@@ -970,7 +973,7 @@ packages:
     resolution: {integrity: sha512-hvgFzDNuheJA+FEN0nieIvKgjriGBd5b1Z4ntvJ5fAQel9l4Og0aUVBuPH5hbk5sx1pomtbC92cy/Vj/QIU4ig==}
     engines: {node: '>=22'}
     peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
+      zod: 4.6.7
 
   ajv-formats@3.0.1:
     resolution: {integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==}
@@ -2701,10 +2704,10 @@ packages:
   zod-to-json-schema@3.25.2:
     resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
     peerDependencies:
-      zod: ^3.25.28 || ^4
+      zod: 4.6.7
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -2724,27 +2727,27 @@ snapshots:
 
   '@actions/io@3.0.2': {}
 
-  '@ai-sdk/gateway@4.0.143(zod@4.4.3)':
+  '@ai-sdk/gateway@4.0.143(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.79(zod@4.4.3)
+      '@ai-sdk/provider-utils': 5.0.79(zod@4.6.7)
       '@vercel/oidc': 3.2.0
-      zod: 4.4.3
+      zod: 4.6.7
 
-  '@ai-sdk/openai-compatible@3.0.90(zod@4.4.3)':
+  '@ai-sdk/openai-compatible@3.0.90(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.79(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.79(zod@4.6.7)
+      zod: 4.6.7
 
-  '@ai-sdk/provider-utils@5.0.79(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.79(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.37
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.30.2
-      zod: 4.4.3
+      zod: 4.6.7
 
   '@ai-sdk/provider@4.0.37':
     dependencies:
@@ -3017,7 +3020,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
-  '@modelcontextprotocol/sdk@1.32.2(supports-color@7.2.0)(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.32.2(supports-color@7.2.0)(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.1.8(hono@4.13.18)
       ajv: 8.20.0
@@ -3034,53 +3037,53 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
   '@myceliumhq/dev-config@0.1.0': {}
 
-  '@myceliumhq/embed@0.1.0(@types/node@26.6.6)(zod@4.4.3)':
+  '@myceliumhq/embed@0.1.0(@types/node@26.6.6)(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/openai-compatible': 3.0.90(zod@4.4.3)
-      ai: 7.0.170(zod@4.4.3)
+      '@ai-sdk/openai-compatible': 3.0.90(zod@4.6.7)
+      ai: 7.0.170(zod@4.6.7)
     optionalDependencies:
       '@huggingface/transformers': 4.3.2(@types/node@26.6.6)
     transitivePeerDependencies:
       - '@types/node'
       - zod
 
-  '@myceliumhq/embed@1.0.0(@types/node@26.6.6)(zod@4.4.3)':
+  '@myceliumhq/embed@1.0.0(@types/node@26.6.6)(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/openai-compatible': 3.0.90(zod@4.4.3)
-      ai: 7.0.170(zod@4.4.3)
+      '@ai-sdk/openai-compatible': 3.0.90(zod@4.6.7)
+      ai: 7.0.170(zod@4.6.7)
     optionalDependencies:
       '@huggingface/transformers': 4.3.2(@types/node@26.6.6)
     transitivePeerDependencies:
       - '@types/node'
       - zod
 
-  '@myceliumhq/index@1.1.1(@types/node@26.6.6)(zod@4.4.3)':
+  '@myceliumhq/index@1.1.1(@types/node@26.6.6)(zod@4.6.7)':
     dependencies:
-      '@myceliumhq/embed': 1.0.0(@types/node@26.6.6)(zod@4.4.3)
+      '@myceliumhq/embed': 1.0.0(@types/node@26.6.6)(zod@4.6.7)
       sqlite-vec: 0.1.9
     transitivePeerDependencies:
       - '@types/node'
       - zod
 
-  '@myceliumhq/mcp@0.1.0(supports-color@7.2.0)(zod@4.4.3)':
+  '@myceliumhq/mcp@0.1.0(supports-color@7.2.0)(zod@4.6.7)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.32.2(supports-color@7.2.0)(zod@4.4.3)
+      '@modelcontextprotocol/sdk': 1.32.2(supports-color@7.2.0)(zod@4.6.7)
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - supports-color
       - zod
 
-  '@myceliumhq/semanticd@1.2.0(@types/node@26.6.6)(zod@4.4.3)':
+  '@myceliumhq/semanticd@1.2.0(@types/node@26.6.6)(zod@4.6.7)':
     dependencies:
-      '@myceliumhq/embed': 0.1.0(@types/node@26.6.6)(zod@4.4.3)
-      '@myceliumhq/index': 1.1.1(@types/node@26.6.6)(zod@4.4.3)
+      '@myceliumhq/embed': 0.1.0(@types/node@26.6.6)(zod@4.6.7)
+      '@myceliumhq/index': 1.1.1(@types/node@26.6.6)(zod@4.6.7)
     transitivePeerDependencies:
       - '@types/node'
       - zod
@@ -3474,12 +3477,12 @@ snapshots:
       clean-stack: 5.3.0
       indent-string: 5.0.0
 
-  ai@7.0.170(zod@4.4.3):
+  ai@7.0.170(zod@4.6.7):
     dependencies:
-      '@ai-sdk/gateway': 4.0.143(zod@4.4.3)
+      '@ai-sdk/gateway': 4.0.143(zod@4.6.7)
       '@ai-sdk/provider': 4.0.37
-      '@ai-sdk/provider-utils': 5.0.79(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.79(zod@4.6.7)
+      zod: 4.6.7
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
@@ -5151,8 +5154,8 @@ snapshots:
 
   yoctocolors@2.2.0: {}
 
-  zod-to-json-schema@3.25.2(zod@4.4.3):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.4.3
+      zod: 4.6.7
 
-  zod@4.4.3: {}
+  zod@4.6.7: {}

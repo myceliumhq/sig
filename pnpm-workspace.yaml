@@ -19,3 +19,8 @@ minimumReleaseAgeExclude:
   - '@myceliumhq/toolkit@0.1.0'
   - '@myceliumhq/semanticd@1.1.0'
   - '@myceliumhq/embed@1.0.0'
+
+# Pin vulnerable Zod 4 resolutions to a patched, compatible release.
+# All current AI SDK/MCP peer ranges accept this Zod 4 release.
+overrides:
+  'zod@>=4.0.0 <4.6.6': '4.6.7'
